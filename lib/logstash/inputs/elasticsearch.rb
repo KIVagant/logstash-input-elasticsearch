@@ -148,14 +148,18 @@ class LogStash::Inputs::Elasticsearch < LogStash::Inputs::Base
     if @scan
       r = process_next_scroll(output_queue, r['_scroll_id'])
       has_hits = r['has_hits']
+      has_aggregations = if r['has_aggregations'].nil? then false else r['has_aggregations'].any? end
     else # not a scan, process the response
       r['hits']['hits'].each { |hit| push_hit(hit, output_queue) }
+      r['aggregations'].each { |aggregation_name, aggregation| push_aggregation(aggregation_name, aggregation, output_queue) } unless r['aggregations'].nil?
       has_hits = r['hits']['hits'].any?
+      has_aggregations = if r['aggregations'].nil? then false else r['aggregations'].any? end
     end
 
-    while has_hits && !stop?
+    while (has_hits || has_aggregations) && !stop?
       r = process_next_scroll(output_queue, r['_scroll_id'])
       has_hits = r['has_hits']
+      has_aggregations = r['has_aggregations']
     end
   end
 
@@ -164,7 +168,7 @@ class LogStash::Inputs::Elasticsearch < LogStash::Inputs::Base
   def process_next_scroll(output_queue, scroll_id)
     r = scroll_request(scroll_id)
     r['hits']['hits'].each { |hit| push_hit(hit, output_queue) }
-    {'has_hits' => r['hits']['hits'].any?, '_scroll_id' => r['_scroll_id']}
+    {'has_hits' => r['hits']['hits'].any?, 'has_aggregations' => if r['aggregations'].nil? then false else r['aggregations'].any? end, '_scroll_id' => r['_scroll_id']}
   end
 
   def push_hit(hit, output_queue)
@@ -190,6 +194,14 @@ class LogStash::Inputs::Elasticsearch < LogStash::Inputs::Base
     end
 
     output_queue << event
+  end
+
+  def push_aggregation(_aggregation_name, aggregation, output_queue)
+    aggregation['buckets'].each do |bucket|
+      event = LogStash::Event.new(bucket)
+      decorate(event)
+      output_queue << event
+    end
   end
 
   def scroll_request scroll_id
